@@ -1,0 +1,25 @@
+# Ubuntu 24.04 arm64 packages used by this i3 setup
+i3
+i3-wm
+i3status
+i3lock
+suckless-tools
+rofi
+dunst
+slock
+slop
+maim
+xdotool
+gsimplecal
+feh
+pipewire-pulse
+wireplumber
+network-manager-gnome
+python3-gi
+gir1.2-gtk-3.0
+python3-pil
+fonts-dejavu-core
+fonts-ubuntu
+# optional
+# xss-lock
+# python3-xlib

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# nm-applet with isolated i3/rofi aesthetic. Does not change global gsettings.
+export XDG_CONFIG_HOME="${HOME}/.config/i3-gtk/nm-applet"
+export GTK_THEME="${NM_APPLET_GTK_THEME:-Yaru-purple-dark}"
+export GTK_ICON_THEME_NAME="${NM_APPLET_ICON_THEME:-Yaru-purple-dark}"
+export GTK_FONT_NAME="${NM_APPLET_FONT:-Ubuntu Sans 12}"
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+export GDK_BACKEND=x11
+exec /usr/bin/nm-applet --indicator "$@"

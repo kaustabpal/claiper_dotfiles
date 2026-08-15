@@ -1,0 +1,33 @@
+[global]
+    monitor = 0
+    follow = none
+    width = 360
+    offset = 12x48
+    origin = top-right
+    notification_limit = 5
+    font = JetBrainsMono Nerd Font Mono 11
+    frame_width = 2
+    frame_color = "#8e44ad"
+    separator_height = 2
+    padding = 10
+    horizontal_padding = 12
+    corner_radius = 8
+    idle_threshold = 0
+    format = "<b>%s</b>\n%b"
+    browser = firefox
+
+[urgency_low]
+    background = "#222222"
+    foreground = "#ffffff"
+    timeout = 3
+
+[urgency_normal]
+    background = "#222222"
+    foreground = "#ffffff"
+    timeout = 4
+
+[urgency_critical]
+    background = "#5a1a1a"
+    foreground = "#ffffff"
+    frame_color = "#e74c3c"
+    timeout = 0

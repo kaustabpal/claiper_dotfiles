@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Apply dark/purple theme signals for the i3 X session.
+set -u
+
+export GTK_THEME="${GTK_THEME:-Yaru-purple-dark}"
+export GTK_ICON_THEME_NAME="${GTK_ICON_THEME_NAME:-Yaru-purple-dark}"
+export GTK_FONT_NAME="${GTK_FONT_NAME:-Ubuntu Sans 11}"
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-gtk3}"
+export QT_STYLE_OVERRIDE="${QT_STYLE_OVERRIDE:-}"
+export XCURSOR_THEME="${XCURSOR_THEME:-Yaru}"
+
+# Persist for newly started apps via dbus-update / user env where possible
+if command -v gsettings >/dev/null 2>&1; then
+  gsettings set org.gnome.desktop.interface gtk-theme 'Yaru-purple-dark' 2>/dev/null || true
+  gsettings set org.gnome.desktop.interface icon-theme 'Yaru-purple-dark' 2>/dev/null || true
+  gsettings set org.gnome.desktop.interface cursor-theme 'Yaru' 2>/dev/null || true
+  gsettings set org.gnome.desktop.interface font-name 'Ubuntu Sans 11' 2>/dev/null || true
+  gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+  gsettings set org.gnome.desktop.interface gtk-enable-primary-paste true 2>/dev/null || true
+fi
+
+# XSETTINGS daemon so GTK apps pick theme without GNOME session
+# xsettingsd OFF by default: snap Firefox inherits it and chrome text vanishes.
+# Start manually only if a GTK app needs it and Firefox is not in use.
+# if command -v xsettingsd >/dev/null 2>&1; then
+#   pgrep -x xsettingsd >/dev/null 2>&1 || xsettingsd >/tmp/xsettingsd.log 2>&1 &
+# fi
+
+printf 'i3 theme env applied\n'

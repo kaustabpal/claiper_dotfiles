@@ -1,0 +1,7 @@
+gtk-theme-name="Yaru-purple-dark"
+gtk-icon-theme-name="Yaru-purple-dark"
+gtk-font-name="Ubuntu Sans 11"
+gtk-cursor-theme-name="Yaru"
+gtk-button-images=1
+gtk-menu-images=1
+include "/usr/share/themes/Yaru-purple-dark/gtk-2.0/gtkrc"

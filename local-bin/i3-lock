@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Stay locked unless console locker exits 0 (PAM success).
+set -u
+export DISPLAY="${DISPLAY:-:1}"
+export GDK_BACKEND=x11
+export GTK_THEME="${I3_LOCK_GTK_THEME:-Adwaita:dark}"
+
+LOCKER="${HOME}/.local/bin/i3-console-lock"
+if [[ ! -f "${LOCKER}" ]]; then
+  command -v i3lock >/dev/null && exec i3lock -n -c 1c1c1c
+  exit 1
+fi
+
+while true; do
+  python3 "${LOCKER}"
+  rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    exit 0
+  fi
+  sleep 0.15
+done

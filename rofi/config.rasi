@@ -1,0 +1,120 @@
+/* Spotlight-style launcher (centered), caliper-01 i3
+ * Accent: #8e44ad · Font: JetBrainsMono Nerd Font Mono
+ */
+configuration {
+    modi:                "drun,run,window";
+    show-icons:          false;
+    font:                "JetBrainsMono Nerd Font Mono 14";
+    terminal:            "ghostty";
+    location:            0;
+    yoffset:             0;
+    xoffset:             0;
+    fixed-num-lines:     true;
+    dpi:                 96;
+    display-drun:        "apps";
+    display-run:         "run";
+    display-window:      "win";
+    drun-display-format: "{name}";
+    window-format:       "{w}  {c}  {t}";
+    kb-mode-next:        "Shift+Right,Control+Tab";
+    kb-mode-previous:    "Shift+Left,Control+ISO_Left_Tab";
+    /* run/ssh history; app launcher uses rofi-drun-recent for recents */
+    disable-history:     false;
+    max-history-size:    40;
+    sort:                true;
+    sorting-method:      "fzf";
+    click-to-exit:        true;
+    drun-show-actions:    false;
+
+}
+
+* {
+    font:                "JetBrainsMono Nerd Font Mono 14";
+    background-color:    #222222;
+    text-color:          #ffffff;
+    margin:              0;
+    padding:             0;
+    spacing:             0;
+    border:              0;
+}
+
+window {
+    location:            center;
+    anchor:              center;
+    width:               720px;
+    height:              360px;
+    border:              3px;
+    border-color:        #8e44ad;
+    border-radius:       12px;
+    padding:             14px;
+    background-color:    #222222;
+    children:            [ mainbox ];
+}
+
+mainbox {
+    orientation:         vertical;
+    children:            [ inputbar, listview ];
+    background-color:    #222222;
+    spacing:             12px;
+    padding:             0;
+    expand:              true;
+}
+
+inputbar {
+    children:            [ entry ];
+    background-color:    #111111;
+    border-radius:       8px;
+    padding:             10px 12px;
+    expand:              false;
+}
+
+entry {
+    background-color:    #111111;
+    text-color:          #ffffff;
+    placeholder:         "Recent apps · type to search";
+    placeholder-color:   #888888;
+    cursor:              text;
+    blink:               true;
+    padding:             0;
+}
+
+listview {
+    layout:              vertical;
+    lines:               10;
+    columns:             1;
+    spacing:             4px;
+    fixed-height:        true;
+    scrollbar:           false;
+    background-color:    #222222;
+    expand:              true;
+    cycle:               true;
+}
+
+element {
+    orientation:         horizontal;
+    children:            [ element-text ];
+    background-color:    #222222;
+    text-color:          #ffffff;
+    padding:             8px 10px;
+    border-radius:       6px;
+    cursor:              pointer;
+}
+
+element selected.normal {
+    background-color:    #8e44ad;
+    text-color:          #ffffff;
+}
+
+element-text {
+    background-color:    inherit;
+    text-color:          inherit;
+    /* match substring: accent purple on dark; white on purple selection */
+    highlight:           bold #8e44ad;
+    vertical-align:      0.5;
+}
+
+element-text selected {
+    background-color:    inherit;
+    text-color:          inherit;
+    highlight:           bold underline #ffffff;
+}

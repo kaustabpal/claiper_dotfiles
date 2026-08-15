@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Fullscreen terminal-style lock. Username + '*' password. PAM auth.
+
+Exit 0 only after successful PAM authenticate. Any crash/failure stays locked
+because i3-lock restarts this process.
+"""
+from __future__ import annotations
+
+import ctypes
+import ctypes.util
+import getpass
+import os
+import socket
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+
+BG = "#000000"
+FG = "#e8e8e8"
+ACCENT = "#8e44ad"
+DIM = "#888888"
+ERR = "#e74c3c"
+
+BANNER = r"""
+######    ##    ##      ##  ######  #######  ######
+##   ##  ####   ##      ##  ##   ## ##       ##   ##
+##      ##  ##  ##      ##  ######  #####    ######
+##      ######  ##      ##  ##      ##       ##  ##
+###### ##    ## ####### ##  ##      #######  ##   ##
+
++--------------------------------------------------+
+|  SESSION LOCKED                                  |
++--------------------------------------------------+
+"""
+
+
+def _banner_block() -> str:
+    lines = [ln.rstrip() for ln in BANNER.strip("\n").splitlines()]
+    width = max(len(ln) for ln in lines)
+    return "\n".join(ln.ljust(width) for ln in lines)
+
+
+PAM_SUCCESS = 0
+PAM_PROMPT_ECHO_OFF = 1
+PAM_PROMPT_ECHO_ON = 2
+PAM_BUF_ERR = 11
+
+
+class PamHandle(ctypes.c_void_p):
+    pass
+
+
+class PamMessage(ctypes.Structure):
+    _fields_ = [("msg_style", ctypes.c_int), ("msg", ctypes.c_char_p)]
+
+
+class PamResponse(ctypes.Structure):
+    _fields_ = [("resp", ctypes.c_char_p), ("resp_retcode", ctypes.c_int)]
+
+
+CONV_FUNC = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.POINTER(PamMessage)),
+    ctypes.POINTER(ctypes.POINTER(PamResponse)),
+    ctypes.c_void_p,
+)
+
+
+class PamConv(ctypes.Structure):
+    _fields_ = [("conv", CONV_FUNC), ("appdata_ptr", ctypes.c_void_p)]
+
+
+def _libc():
+    return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+
+
+def _libpam():
+    return ctypes.CDLL(ctypes.util.find_library("pam") or "libpam.so.0")
+
+
+def pam_auth(user: str, password: str, service: str = "i3lock") -> bool:
+    if not user:
+        return False
+    pam = _libpam()
+    libc = _libc()
+    libc.malloc.restype = ctypes.c_void_p
+    libc.strdup.restype = ctypes.c_void_p
+    libc.memset.restype = ctypes.c_void_p
+    pam.pam_start.restype = ctypes.c_int
+    pam.pam_authenticate.restype = ctypes.c_int
+    pam.pam_acct_mgmt.restype = ctypes.c_int
+    pam.pam_end.restype = ctypes.c_int
+
+    def conv(n_msg, msg, resp, _app):
+        try:
+            size = ctypes.sizeof(PamResponse) * max(n_msg, 1)
+            raw = libc.malloc(size)
+            if not raw:
+                return PAM_BUF_ERR
+            libc.memset(raw, 0, size)
+            arr = ctypes.cast(raw, ctypes.POINTER(PamResponse))
+            pw = (password or "").encode("utf-8")
+            for i in range(n_msg):
+                style = msg[i].contents.msg_style
+                if style in (PAM_PROMPT_ECHO_OFF, PAM_PROMPT_ECHO_ON):
+                    dup = libc.strdup(pw)
+                    arr[i].resp = ctypes.cast(dup, ctypes.c_char_p)
+                    arr[i].resp_retcode = 0
+                else:
+                    arr[i].resp = None
+                    arr[i].resp_retcode = 0
+            resp[0] = arr
+            return PAM_SUCCESS
+        except Exception:
+            return PAM_BUF_ERR
+
+    conv_cb = CONV_FUNC(conv)
+    conv_struct = PamConv(conv_cb, None)
+    handle = PamHandle()
+    if pam.pam_start(service.encode(), user.encode(), ctypes.byref(conv_struct), ctypes.byref(handle)) != PAM_SUCCESS:
+        return False
+    try:
+        if pam.pam_authenticate(handle, 0) != PAM_SUCCESS:
+            return False
+        if pam.pam_acct_mgmt(handle, 0) != PAM_SUCCESS:
+            return False
+        return True
+    finally:
+        pam.pam_end(handle, 0)
+
+
+class LockWindow(Gtk.Window):
+    def __init__(self) -> None:
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_title("i3-console-lock")
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_accept_focus(True)
+        self.stick()
+        self.fullscreen()
+
+        self.user = getpass.getuser()
+        self.host = socket.gethostname()
+        self.secret = ""
+        self.status = "waiting for password"
+        self.authed = False
+
+        css = f"""
+        window {{ background-color: {BG}; }}
+        label {{
+          color: {FG};
+          font-family: "DejaVu Sans Mono", "Ubuntu Mono", monospace;
+          font-size: 13px;
+          font-feature-settings: "liga" 0, "calt" 0;
+        }}
+        .dim {{ color: {DIM}; font-size: 11px; }}
+        .accent {{ color: {ACCENT}; }}
+        label.err {{ color: {ERR}; font-size: 11px; }}
+        """
+        provider = Gtk.CssProvider()
+        try:
+            provider.load_from_data(css.encode())
+        except Exception:
+            provider.load_from_data(f"window {{ background-color: {BG}; }}".encode())
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_spacing(6)
+
+        mono = Pango.FontDescription("DejaVu Sans Mono 13")
+        self.banner = Gtk.Label(label=_banner_block())
+        self.banner.set_xalign(0.0)
+        self.banner.set_halign(Gtk.Align.START)
+        self.banner.override_font(mono)
+        self.banner.get_style_context().add_class("accent")
+
+        self.login = Gtk.Label()
+        self.login.set_xalign(0.0)
+        self.login.set_halign(Gtk.Align.START)
+        self.login.override_font(mono)
+        self.pass_lbl = Gtk.Label()
+        self.pass_lbl.set_xalign(0.0)
+        self.pass_lbl.set_halign(Gtk.Align.START)
+        self.pass_lbl.override_font(mono)
+        self.hint = Gtk.Label()
+        self.hint.set_xalign(0.0)
+        self.hint.set_halign(Gtk.Align.START)
+        self.hint.override_font(Pango.FontDescription("DejaVu Sans Mono 11"))
+        self.hint.get_style_context().add_class("dim")
+        self.err = Gtk.Label()
+        self.err.set_xalign(0.0)
+        self.err.set_halign(Gtk.Align.START)
+        self.err.override_font(Pango.FontDescription("DejaVu Sans Mono 11"))
+        self.err.get_style_context().add_class("err")
+
+        box.pack_start(self.banner, False, False, 0)
+        lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        lines.set_halign(Gtk.Align.START)
+        lines.set_spacing(10)
+        lines.pack_start(self.login, False, False, 0)
+        lines.pack_start(self.pass_lbl, False, False, 0)
+        lines.pack_start(self.err, False, False, 0)
+        box.pack_start(lines, False, False, 10)
+        self.add(box)
+
+        self.connect("key-press-event", self.on_key)
+        self.connect("delete-event", lambda *_: True)
+        self.connect("realize", self.on_realize)
+        self.refresh()
+
+    def refresh(self) -> bool:
+        self.login.set_text(f"{self.host} login: {self.user}")
+        self.pass_lbl.set_text(f"Password: {'*' * len(self.secret)}")
+        self.hint.set_text("")
+        fail = self.status.lower() in ("login incorrect", "incorrect password")
+        self.err.set_text("incorrect password" if fail else self.status)
+        ctx = self.err.get_style_context()
+        if fail:
+            ctx.remove_class("dim")
+            ctx.add_class("err")
+            self.err.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.906, 0.298, 0.235, 1.0))
+        else:
+            ctx.remove_class("err")
+            ctx.add_class("dim")
+            self.err.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.533, 0.533, 0.533, 1.0))
+        return False
+
+    def on_realize(self, *_args) -> None:
+        win = self.get_window()
+        if win is None:
+            return
+        seat = Gdk.Display.get_default().get_default_seat()
+        seat.grab(
+            win,
+            Gdk.SeatCapabilities.KEYBOARD | Gdk.SeatCapabilities.POINTER,
+            True,
+            None,
+            None,
+            None,
+        )
+
+    def on_key(self, _w, event: Gdk.EventKey) -> bool:
+        key = event.keyval
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.try_unlock()
+            return True
+        if key == Gdk.KEY_BackSpace:
+            self.secret = self.secret[:-1]
+            self.status = "waiting for password"
+            self.refresh()
+            return True
+        if key in (Gdk.KEY_Escape, Gdk.KEY_Tab):
+            return True
+        if key == Gdk.KEY_u and (event.state & Gdk.ModifierType.CONTROL_MASK):
+            self.secret = ""
+            self.status = "waiting for password"
+            self.refresh()
+            return True
+        code = Gdk.keyval_to_unicode(key)
+        ch = chr(code) if code else ""
+        if ch and ch.isprintable():
+            self.secret += ch
+            self.status = "waiting for password"
+            self.refresh()
+            return True
+        return True
+
+    def try_unlock(self) -> None:
+        self.status = "checking..."
+        self.refresh()
+        while Gtk.events_pending():
+            Gtk.main_iteration()
+        ok = False
+        try:
+            ok = pam_auth(self.user, self.secret) is True
+        except Exception:
+            ok = False
+        if ok:
+            self.authed = True
+            Gtk.main_quit()
+            return
+        self.secret = ""
+        self.status = "incorrect password"
+        self.refresh()
+
+
+def main() -> int:
+    Gdk.set_program_class("I3ConsoleLock")
+    GLib.set_prgname("I3ConsoleLock")
+    os.environ.setdefault("DISPLAY", ":1")
+    win = LockWindow()
+    win.show_all()
+    Gtk.main()
+    return 0 if win.authed else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

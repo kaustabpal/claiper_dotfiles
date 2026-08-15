@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Rofi-only power menu for i3. No extra GUI.
+set -euo pipefail
+export DISPLAY="${DISPLAY:-:1}"
+
+choice=$(printf '%s\n' \
+  "Lock" \
+  "Logout" \
+  "Reboot" \
+  "Power off" \
+  | rofi -dmenu -i -p "power" -format s) || exit 0
+
+case "$choice" in
+  Lock) exec /home/kaustab/.local/bin/i3-lock ;;
+  Logout) exec i3-msg exit ;;
+  Reboot) exec systemctl reboot ;;
+  "Power off") exec systemctl poweroff ;;
+esac

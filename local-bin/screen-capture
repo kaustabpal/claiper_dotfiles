@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Area-only screenshot / screen-record for i3 (X11)
+# Image: maim -s | Video: slop + ffmpeg | Stop: second press of record key
+# Pattern: https://www.mattduck.com/2021-06-exwm-screenshots
+# Usage: screen-capture {area|record|record-stop|status}
+set -euo pipefail
+
+SHOT_DIR="${SCREEN_CAPTURE_DIR:-$HOME/Pictures/Screenshots}"
+REC_DIR="${SCREEN_RECORD_DIR:-$HOME/Videos/Recordings}"
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/screen-capture-record.pid"
+PATH_FILE="${PID_FILE}.path"
+LOG_FILE="${XDG_RUNTIME_DIR:-/tmp}/screen-capture-record.log"
+
+
+ts() { date +%Y-%m-%d_%H-%M-%S; }
+
+ensure_dirs() {
+  mkdir -p "$SHOT_DIR" "$REC_DIR"
+}
+
+notify() {
+  local title=$1 body=${2:-}
+  if command -v dunstify >/dev/null 2>&1; then
+    dunstify -a screen-capture -u normal "$title" "$body" 2>/dev/null && return 0
+  fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a screen-capture "$title" "$body" 2>/dev/null && return 0
+  fi
+  # last resort visible in i3
+  if command -v i3-nagbar >/dev/null 2>&1; then
+    i3-nagbar -t warning -m "$title — $body" >/dev/null 2>&1 &
+  fi
+}
+
+even() {
+  local n=$1
+  if (( n % 2 != 0 )); then n=$((n + 1)); fi
+  printf '%s' "$n"
+}
+
+x11_display() {
+  local disp="${DISPLAY:-:0}"
+  case "$disp" in
+    *:*) ;;
+    *) disp=":${disp}" ;;
+  esac
+  [[ "$disp" == *.* ]] || disp="${disp}.0"
+  printf '%s' "$disp"
+}
+
+record_running() {
+  [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
+}
+
+screenshot_area() {
+  ensure_dirs
+  local out="$SHOT_DIR/Screenshot-$(ts).png"
+  if ! command -v maim >/dev/null 2>&1; then
+    notify "Screenshot failed" "maim not found"
+    return 1
+  fi
+  # Single clean selector:
+  #  -o/--noopengl  avoids NVIDIA nested/trail rectangles
+  #  -t 0           region-only (no window-outline nesting)
+  #  -l -c …alpha   one translucent fill instead of multi borders
+  if maim -s -o -t 0 -c 0.557,0.267,0.678,1 -b 2 "$out"; then
+    notify "Screenshot saved" "$out"
+    printf '%s
+' "$out"
+    return 0
+  fi
+  notify "Screenshot cancelled" "No area selected"
+  return 1
+}
+
+record_stop() {
+  if ! record_running; then
+    rm -f "$PID_FILE" "$PATH_FILE"
+    notify "Not recording" "No active capture"
+    return 1
+  fi
+  local pid out
+  pid=$(cat "$PID_FILE")
+  out=$(cat "$PATH_FILE" 2>/dev/null || true)
+  kill -INT "$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 80); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  notify "Recording stopped" "${out:-see $REC_DIR}"
+  printf '%s\n' "${out:-}"
+}
+
+record_area() {
+  # toggle: if already recording, stop
+  if record_running; then
+    record_stop
+    return
+  fi
+  if ! command -v slop >/dev/null 2>&1; then
+    notify "Record failed" "slop not found"
+    return 1
+  fi
+  ensure_dirs
+  local slop X Y W H G ID out disp
+  notify "Select area to record" "Drag a rectangle, then release"
+  slop=$(slop -f "%x %y %w %h %g %i" -o -t 0 -c 0.557,0.267,0.678,1 -b 2) || {
+    notify "Record cancelled" "No area selected"
+    return 1
+  }
+  read -r X Y W H G ID <<<"$slop"
+  W=$(even "$W")
+  H=$(even "$H")
+  out="$REC_DIR/Recording-$(ts).mp4"
+  disp=$(x11_display)
+
+  if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
+    nohup ffmpeg -y -nostdin \
+      -f x11grab -video_size "${W}x${H}" -framerate 30 -i "${disp}+${X},${Y}" \
+      -c:v h264_nvenc -preset p4 -cq 23 -b:v 0 -pix_fmt yuv420p \
+      "$out" >"$LOG_FILE" 2>&1 &
+  else
+    nohup ffmpeg -y -nostdin \
+      -f x11grab -video_size "${W}x${H}" -framerate 30 -i "${disp}+${X},${Y}" \
+      -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p \
+      "$out" >"$LOG_FILE" 2>&1 &
+  fi
+  echo $! >"$PID_FILE"
+  echo "$out" >"$PATH_FILE"
+  notify "Recording…" "$out — press Alt+Shift+v again to stop"
+  printf '%s\n' "$out"
+}
+
+cmd="${1:-area}"
+case "$cmd" in
+  area|image|shot) screenshot_area ;;
+  record|record-area|video) record_area ;;
+  record-stop|stop) record_stop ;;
+  status)
+    if record_running; then
+      echo "recording pid=$(cat "$PID_FILE") file=$(cat "$PATH_FILE" 2>/dev/null)"
+    else
+      echo "idle"
+    fi
+    ;;
+  *)
+    echo "Usage: $0 {area|record|stop|status}" >&2
+    exit 2
+    ;;
+esac

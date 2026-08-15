@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=i3
+Comment=i3 with DPI-correct borders (Xft.dpi=96)
+Exec=/home/kaustab/.local/bin/i3-session
+TryExec=/home/kaustab/.local/bin/i3-session
+Type=Application
+X-LightDM-DesktopName=i3
+DesktopNames=i3
+Keywords=tiling;wm;windowmanager;window;manager;

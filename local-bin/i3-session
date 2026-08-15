@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# i3 session wrapper for caliper-01
+# 1) Xft.dpi=96 so border pixel N maps 1:1
+# 2) dark/purple GTK/Qt theme env for menus
+set -euo pipefail
+
+printf 'Xft.dpi: 96\n' | xrdb -merge
+
+export GTK_THEME="${GTK_THEME:-Yaru-purple-dark}"
+export GTK_ICON_THEME_NAME="${GTK_ICON_THEME_NAME:-Yaru-purple-dark}"
+export GTK_FONT_NAME="${GTK_FONT_NAME:-Ubuntu Sans 11}"
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-gtk3}"
+export XCURSOR_THEME="${XCURSOR_THEME:-Yaru}"
+
+# Make env visible to user systemd / dbus-activated apps
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+  dbus-update-activation-environment --systemd \
+    GTK_THEME GTK_ICON_THEME_NAME GTK_FONT_NAME GTK_APPLICATION_PREFER_DARK_THEME \
+    QT_QPA_PLATFORMTHEME XCURSOR_THEME DISPLAY XAUTHORITY \
+    2>/dev/null || true
+fi
+
+# Apply gsettings + start xsettingsd
+if [[ -x "${HOME}/.local/bin/i3-apply-theme-env" ]]; then
+  "${HOME}/.local/bin/i3-apply-theme-env" || true
+elif command -v i3-apply-theme-env >/dev/null 2>&1; then
+  i3-apply-theme-env || true
+fi
+
+exec /usr/bin/i3 "$@"

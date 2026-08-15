@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Isolated calendar look for the i3 bar. Does not change global gsettings.
+export XDG_CONFIG_HOME="${HOME}/.config/i3-gtk/gsimplecal"
+export GTK_THEME="${GSIMPLECAL_GTK_THEME:-Yaru-purple-dark}"
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+export GTK_FONT_NAME="${GSIMPLECAL_GTK_FONT:-Ubuntu Sans 13}"
+export GDK_BACKEND=x11
+exec /usr/bin/gsimplecal "$@"

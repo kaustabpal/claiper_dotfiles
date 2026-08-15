@@ -1,0 +1,13 @@
+*.bak.*
+*~
+.DS_Store
+.cache/
+*.swp
+# never commit secrets or browser logins
+**/.mozilla/
+**/firefox-backup*/
+**/*.default/
+**/*.OLD-*/
+.env
+*.pem
+id_*

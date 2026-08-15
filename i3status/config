@@ -1,0 +1,21 @@
+# i3status — caliper-01
+# WiFi UI: nm-applet (tray). Status: Temp (wrapper) + date/clock
+# Separator color #5F676F matches Pi footer.
+
+general {
+        output_format = "i3bar"
+        colors = true
+        interval = 1
+        color_good = "#e8e8e8"
+        color_degraded = "#f0c674"
+        color_bad = "#e74c3c"
+        separator = " "
+        markup = "pango"
+}
+
+order += "tztime local"
+
+tztime local {
+        # date | time |  (trailing | before tray / wifi)
+        format = "%a %d-%m-%Y <span foreground='#5F676F'> | </span>%H:%M:%S <span foreground='#5F676F'> | </span>"
+}

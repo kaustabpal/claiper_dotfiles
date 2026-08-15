@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Navigate browser history without Alt (i3 $mod steals Alt+Left/Right).
+# Usage: browser-nav back|forward
+set -euo pipefail
+
+dir="${1:-back}"
+log="${XDG_RUNTIME_DIR:-/tmp}/browser-nav.log"
+echo "$(date +%H:%M:%S) $dir" >>"$log"
+
+wid="$(xdotool getactivewindow 2>/dev/null || true)"
+if [[ -n "${wid:-}" ]]; then
+  xdotool windowactivate --sync "$wid" 2>/dev/null || true
+fi
+
+# Mouse side-buttons: 8=Back, 9=Forward — widely handled by Firefox/Chrome.
+# Prefer this over Alt+Left (stolen by i3) or XF86* (sometimes ignored).
+case "$dir" in
+  back)
+    if [[ -n "${wid:-}" ]]; then
+      xdotool click --window "$wid" 8 2>/dev/null \
+        || xdotool key --window "$wid" --clearmodifiers XF86Back 2>/dev/null \
+        || xdotool key --clearmodifiers XF86Back 2>/dev/null \
+        || true
+    else
+      xdotool click 8 2>/dev/null || xdotool key --clearmodifiers XF86Back 2>/dev/null || true
+    fi
+    ;;
+  forward)
+    if [[ -n "${wid:-}" ]]; then
+      xdotool click --window "$wid" 9 2>/dev/null \
+        || xdotool key --window "$wid" --clearmodifiers XF86Forward 2>/dev/null \
+        || xdotool key --clearmodifiers XF86Forward 2>/dev/null \
+        || true
+    else
+      xdotool click 9 2>/dev/null || xdotool key --clearmodifiers XF86Forward 2>/dev/null || true
+    fi
+    ;;
+  *)
+    echo "Usage: $0 back|forward" >&2
+    exit 2
+    ;;
+esac

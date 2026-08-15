@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Set the X root wallpaper to the CALIPER ASCII image."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / ".local/lib/python"))
+
+from PIL import Image  # noqa: E402
+from Xlib import X, display, Xatom  # noqa: E402
+from Xlib.ext import xinerama  # noqa: E402
+
+IMG = Path(os.environ.get("I3_WALLPAPER", Path.home() / ".local/share/wallpapers/caliper.png"))
+RENDER = Path.home() / ".local/bin/i3-render-wallpaper"
+
+
+def geom() -> tuple[int, int]:
+    try:
+        out = subprocess.check_output(["xrandr", "--current"], text=True)
+        for line in out.splitlines():
+            if "*" in line:
+                token = line.split()[0]
+                if "x" in token:
+                    w, h = token.split("x", 1)
+                    return int(w), int(h)
+    except Exception:
+        pass
+    return 2560, 1440
+
+
+def ensure() -> Path:
+    w, h = geom()
+    need = True
+    if IMG.is_file():
+        try:
+            need = Image.open(IMG).size != (w, h)
+        except Exception:
+            need = True
+    if need:
+        env = os.environ.copy()
+        env["I3_WALL_W"] = str(w)
+        env["I3_WALL_H"] = str(h)
+        env["I3_WALLPAPER"] = str(IMG)
+        subprocess.check_call(["python3", str(RENDER)], env=env)
+    return IMG
+
+
+def set_root(path: Path) -> None:
+    d = display.Display()
+    screen = d.screen()
+    root = screen.root
+    im = Image.open(path).convert("RGB")
+    w, h = im.size
+    # Xlib wants ZPixmap data in native endian RGBX
+    raw = im.tobytes("raw", "BGRX")
+    pixmap = root.create_pixmap(w, h, screen.root_depth)
+    gc = pixmap.create_gc()
+    pixmap.put_image(gc, X.ZPixmap, 0, 0, 0, 0, w, h, 32, raw)
+    for name in ("_XROOTPMAP_ID", "ESETROOT_PMAP_ID"):
+        atom = d.intern_atom(name, only_if_exists=False)
+        root.change_property(atom, Xatom.PIXMAP, 32, [pixmap.id])
+    root.change_attributes(background_pixmap=pixmap)
+    root.clear_area(0, 0, w, h)
+    d.sync()
+    d.flush()
+
+
+def main() -> int:
+    set_root(ensure())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

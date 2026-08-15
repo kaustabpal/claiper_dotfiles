@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Rofi app launcher: recent apps first; type to search/filter."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache"))
+HIST_PATH = CACHE / "rofi-drun-history"
+MAX_HIST = 50
+
+DATA_DIRS = []
+xdg = os.environ.get("XDG_DATA_HOME", str(HOME / ".local/share"))
+DATA_DIRS.append(Path(xdg) / "applications")
+for d in os.environ.get(
+    "XDG_DATA_DIRS", "/usr/local/share:/usr/share"
+).split(":"):
+    if d:
+        DATA_DIRS.append(Path(d) / "applications")
+
+
+def parse_desktop(path: Path) -> dict | None:
+    try:
+        text = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    in_entry = False
+    data: dict[str, str] = {}
+    for line in text:
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            if in_entry:
+                break
+            in_entry = s == "[Desktop Entry]"
+            continue
+        if not in_entry or "=" not in s or s.startswith("#"):
+            continue
+        k, v = s.split("=", 1)
+        data.setdefault(k, v)
+    if data.get("Type", "Application") != "Application":
+        return None
+    if data.get("NoDisplay", "").lower() == "true":
+        return None
+    if data.get("Hidden", "").lower() == "true":
+        return None
+    name = data.get("Name")
+    exe = data.get("Exec")
+    if not name or not exe:
+        return None
+    # skip terminal-only helpers without tryexec if marked
+    return {
+        "name": name,
+        "id": path.name,  # firefox.desktop
+        "path": str(path),
+        "exec": exe,
+        "terminal": data.get("Terminal", "false").lower() == "true",
+        "tryexec": data.get("TryExec", ""),
+    }
+
+
+def collect_apps() -> list[dict]:
+    seen: set[str] = set()
+    apps: list[dict] = []
+    for root in DATA_DIRS:
+        if not root.is_dir():
+            continue
+        for p in sorted(root.rglob("*.desktop")):
+            app = parse_desktop(p)
+            if not app:
+                continue
+            # first hit wins (user local overrides system)
+            if app["id"] in seen:
+                continue
+            seen.add(app["id"])
+            apps.append(app)
+    return apps
+
+
+def load_history() -> list[str]:
+    if not HIST_PATH.is_file():
+        return []
+    ids: list[str] = []
+    for line in HIST_PATH.read_text(errors="replace").splitlines():
+        s = line.strip()
+        if s and s not in ids:
+            ids.append(s)
+    return ids
+
+
+def save_history(desktop_id: str) -> None:
+    prev = [x for x in load_history() if x != desktop_id]
+    new = [desktop_id] + prev
+    HIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HIST_PATH.write_text("\n".join(new[:MAX_HIST]) + "\n")
+
+
+def ordered_apps(apps: list[dict]) -> list[dict]:
+    by_id = {a["id"]: a for a in apps}
+    hist = load_history()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for hid in hist:
+        if hid in by_id and hid not in seen:
+            out.append(by_id[hid])
+            seen.add(hid)
+    # remainder alphabetical by name
+    rest = sorted(
+        (a for a in apps if a["id"] not in seen),
+        key=lambda a: a["name"].casefold(),
+    )
+    out.extend(rest)
+    return out
+
+
+def kill_rofi() -> None:
+    """Ensure launcher UI is gone after accept."""
+    for sig in (15, 9):
+        subprocess.run(
+            ["pkill", f"-{sig}", "-x", "rofi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def launch(app: dict) -> None:
+
+    save_history(app["id"])
+    # gio/gtk-launch handles Exec field codes (%U etc.)
+    for cmd in (
+        ["gtk-launch", app["id"]],
+        ["gio", "launch", app["path"]],
+        ["dex", app["path"]],
+    ):
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return
+        except FileNotFoundError:
+            continue
+    # last resort: strip field codes and exec
+    import re
+    import shlex
+
+    exe = re.sub(r"%[a-zA-Z]", "", app["exec"]).strip()
+    parts = shlex.split(exe)
+    if parts:
+        subprocess.Popen(
+            parts,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def main() -> int:
+    apps = ordered_apps(collect_apps())
+    if not apps:
+        return 1
+
+    # unique display labels; disambiguate collisions
+    labels: list[str] = []
+    label_to_app: dict[str, dict] = {}
+    used: dict[str, int] = {}
+    for app in apps:
+        base = app["name"]
+        n = used.get(base, 0)
+        used[base] = n + 1
+        label = base if n == 0 else f"{base} ({app['id']})"
+        labels.append(label)
+        label_to_app[label] = app
+
+    rofi = os.environ.get("ROFI_BIN", "rofi")
+
+    proc = subprocess.run(
+        [
+            rofi,
+            "-dmenu",
+            "-i",
+            "-matching",
+            "fuzzy",
+            "-sorting-method",
+            "fzf",
+            "-p",
+            "apps",
+            "-format",
+            "s",
+        ],
+        input="\n".join(labels) + "\n",
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return 0
+    choice = proc.stdout.strip()
+    if not choice or choice not in label_to_app:
+        kill_rofi()
+        return 0
+    # rofi -dmenu should already have exited; force-clean any leftover window
+    kill_rofi()
+    launch(label_to_app[choice])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

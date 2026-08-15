@@ -1,0 +1,43 @@
+/* Isolated to nm-applet only. Match i3/rofi: #1c1c1c / #8e44ad / #5F676F */
+menu,
+.menu,
+.context-menu,
+popover,
+popover.background {
+  background-color: #1c1c1c;
+  color: #e8e8e8;
+  border: 2px solid #8e44ad;
+  border-radius: 10px;
+  padding: 6px;
+}
+
+menuitem,
+modelbutton {
+  background-color: transparent;
+  color: #e8e8e8;
+  border-radius: 6px;
+  padding: 8px 12px;
+  min-height: 1.6em;
+}
+
+menuitem:hover,
+menuitem:selected,
+modelbutton:hover,
+modelbutton:selected {
+  background-color: #8e44ad;
+  color: #ffffff;
+}
+
+menu separator,
+.separator {
+  background-color: #5F676F;
+  min-height: 1px;
+  margin: 5px 8px;
+}
+
+tooltip {
+  background-color: #222222;
+  color: #e8e8e8;
+  border: 1px solid #5F676F;
+  border-radius: 6px;
+}

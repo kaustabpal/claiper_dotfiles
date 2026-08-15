@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stop GNOME background agents that are unnecessary under i3.
+# Does NOT mask units — GNOME session can start them again later.
+set -u
+
+log() { printf '%s\n' "$*"; }
+
+stop_user_unit() {
+  local u=$1
+  if systemctl --user cat "$u" >/dev/null 2>&1; then
+    systemctl --user stop "$u" >/dev/null 2>&1 || true
+    log "stopped user unit: $u"
+  fi
+}
+
+# File indexer (GNOME search)
+stop_user_unit tracker-miner-fs-3.service
+stop_user_unit tracker-miner-fs-control-3.service
+stop_user_unit tracker-writeback-3.service
+stop_user_unit tracker-xdg-portal-3.service
+
+# Online Accounts volume monitor (pulls goa stack)
+stop_user_unit gvfs-goa-volume-monitor.service
+
+# goa-daemon is often not a long-lived user unit name; stop process if present
+if pgrep -x goa-daemon >/dev/null 2>&1; then
+  pkill -x goa-daemon >/dev/null 2>&1 || true
+  log "stopped process: goa-daemon"
+fi
+
+# Extra tracker processes if any
+if pgrep -f '/usr/libexec/tracker-miner-fs-3' >/dev/null 2>&1; then
+  pkill -f '/usr/libexec/tracker-miner-fs-3' >/dev/null 2>&1 || true
+  log "stopped process: tracker-miner-fs-3"
+fi
+
+log "done: gnome agents stopped for i3"

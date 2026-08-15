@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# i3-safe Firefox launcher.
+# Use Adwaita:dark so GTK context menus are dark.
+# Do NOT use Yaru-purple-dark / xsettingsd here (that hid chrome text).
+export MOZ_ENABLE_WAYLAND=0
+export MOZ_USE_XINPUT2=1
+export GTK_THEME=Adwaita:dark
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+unset GTK_FONT_NAME
+exec /snap/bin/firefox "$@"
