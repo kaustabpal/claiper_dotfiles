@@ -71,7 +71,7 @@ chmod +x install.sh
 | Super+Shift+e | power menu |
 | Super+= / Super+- | volume |
 | Super+Shift+m | mute |
-| Ctrl+Left / Right | Firefox back / forward |
+| Alt+Left / Right | Firefox back / forward |
 
 ## Safety rules
 

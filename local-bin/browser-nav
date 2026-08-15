@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Navigate browser history without Alt (i3 $mod steals Alt+Left/Right).
+# Navigate browser history. Maps to mouse btn 8/9 (back/forward).
 # Usage: browser-nav back|forward
 set -euo pipefail
 
@@ -13,7 +13,7 @@ if [[ -n "${wid:-}" ]]; then
 fi
 
 # Mouse side-buttons: 8=Back, 9=Forward — widely handled by Firefox/Chrome.
-# Prefer this over Alt+Left (stolen by i3) or XF86* (sometimes ignored).
+# Prefer mouse side-buttons over Alt+Left/Right where Firefox is finicky.
 case "$dir" in
   back)
     if [[ -n "${wid:-}" ]]; then

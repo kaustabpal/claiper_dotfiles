@@ -76,10 +76,10 @@ bindsym --release $mod+Shift+x exec --no-startup-id /home/kaustab/.local/bin/i3-
 bindsym --release $mod+Shift+s exec --no-startup-id /home/kaustab/.local/bin/screen-capture area
 bindsym --release $mod+Shift+v exec --no-startup-id /home/kaustab/.local/bin/screen-capture record
 
-# Browser back/forward (Super is $mod; Ctrl+Left/Right = history)
-# Ctrl+Left/Right when browser focused → browser-nav (mouse btn 8/9 / XF86*)
-bindsym Ctrl+Left [class="firefox|firefox_firefox|Navigator|brave-browser|Brave-browser|Chromium|Google-chrome|chromium"] exec --no-startup-id /home/kaustab/.local/bin/browser-nav back
-bindsym Ctrl+Right [class="firefox|firefox_firefox|Navigator|brave-browser|Brave-browser|Chromium|Google-chrome|chromium"] exec --no-startup-id /home/kaustab/.local/bin/browser-nav forward
+# Browser back/forward (Super is $mod; Alt+Left/Right = history)
+# Alt+Left/Right when browser focused → browser-nav (mouse btn 8/9 / XF86*)
+bindsym Alt+Left [class="firefox|firefox_firefox|Navigator|brave-browser|Brave-browser|Chromium|Google-chrome|chromium"] exec --no-startup-id /home/kaustab/.local/bin/browser-nav back
+bindsym Alt+Right [class="firefox|firefox_firefox|Navigator|brave-browser|Brave-browser|Chromium|Google-chrome|chromium"] exec --no-startup-id /home/kaustab/.local/bin/browser-nav forward
 
 # kill focused window
 bindsym $mod+Shift+q kill
