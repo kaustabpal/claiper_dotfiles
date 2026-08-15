@@ -1,52 +1,56 @@
 #!/usr/bin/env python3
-"""i3status wrapper: clickable clock calendar + GPU temperature block."""
+"""i3status wrapper: calendar click + GPU temp/mem + system RAM."""
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from collections import deque
 from pathlib import Path
 
 CONFIG = os.path.expanduser("~/.config/i3status/config")
 HOME = os.path.expanduser("~")
 
 GPU_COLOR = "#e74c3c"  # red
+MEM_COLOR = "#e8e8e8"
 SEP_COLOR = "#5F676F"  # Pi footer separator
 GPU_REFRESH_SEC = 3.0
+TOK_REFRESH_SEC = 2.0
+TOK_AVG_WINDOW_SEC = 30.0
+TOK_URL = "http://127.0.0.1:8888/metrics"
+TOK_COLOR = "#e8e8e8"
+GEN_RE = re.compile(
+    r"^vllm:generation_tokens_total(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
+    re.M,
+)
 
 _gpu_lock = threading.Lock()
-_gpu_text = "Temp: --°C"
+_gpu_temp = "n/a"
+_gpu_mem = "n/a"
 _gpu_ts = 0.0
 
-
-def _ensure_gsimplecal_css() -> None:
-    return  # disabled; theme via settings.ini
-    src = Path(HOME) / ".config/gsimplecal/gtk.css"
-    if not src.is_file():
-        return
-    user_dir = Path(HOME) / ".config/gtk-3.0"
-    user_css = user_dir / "gtk.css"
-    begin = "/* >>> gsimplecal-i3 begin */"
-    end = "/* <<< gsimplecal-i3 end */"
-    user_dir.mkdir(parents=True, exist_ok=True)
-    existing = user_css.read_text() if user_css.is_file() else ""
-    if begin in existing:
-        return
-    block = f"\n{begin}\n{src.read_text().strip()}\n{end}\n"
-    user_css.write_text(existing + block)
+_tok_lock = threading.Lock()
+_tok_ts = 0.0
+_tok_last_count = None
+_tok_last_t = None
+_tok_live = None
+_tok_avg = None
+_tok_ok = False
+_tok_samples = deque()
 
 
 def open_calendar() -> None:
     """Toggle/pop a small calendar near the bar (dark theme)."""
-    # css injection disabled - theme-only via xsettingsd/settings.ini
     launch = os.environ.copy()
     launch["PATH"] = f"{HOME}/.local/bin:" + launch.get("PATH", "")
     launch["GTK_THEME"] = launch.get("GSIMPLECAL_GTK_THEME", "Yaru-purple-dark")
     launch["GTK_APPLICATION_PREFER_DARK_THEME"] = "1"
-    # gsimplecal has no real font keys; size comes from GTK font
     launch["GTK_FONT_NAME"] = launch.get("GSIMPLECAL_GTK_FONT", "Ubuntu Sans 13")
     launch["GDK_BACKEND"] = "x11"
 
@@ -69,8 +73,45 @@ def open_calendar() -> None:
             continue
 
 
-def read_gpu_temp_c() -> str | None:
-    """Return GPU temp in °C via nvidia-smi, or None on failure."""
+def _parse_mib(token: str) -> float | None:
+    token = token.strip().replace(",", "")
+    if not token or token.upper() in {"N/A", "[N/A]", "NOT SUPPORTED"}:
+        return None
+    # "103197 MiB" or "103197"
+    num = token.split()[0]
+    try:
+        return float(num)
+    except ValueError:
+        return None
+
+
+def _fmt_gib(mib: float) -> str:
+    gib = mib / 1024.0
+    if gib >= 10:
+        return f"{gib:.0f}G"
+    return f"{gib:.1f}G"
+
+
+def read_meminfo() -> tuple[int, int] | None:
+    """Return (available_kb, total_kb) from /proc/meminfo."""
+    total = avail = None
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    total = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1])
+                if total is not None and avail is not None:
+                    return avail, total
+    except OSError:
+        return None
+    return None
+
+
+def read_gpu_temp() -> str | None:
+    """Return GPU temp in C."""
+    temp = None
     try:
         out = subprocess.check_output(
             [
@@ -82,47 +123,119 @@ def read_gpu_temp_c() -> str | None:
             timeout=2.0,
             stderr=subprocess.DEVNULL,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    line = out.strip().splitlines()[0].strip() if out.strip() else ""
-    if not line:
-        return None
-    # multi-GPU: first line; allow "56" or "56 C"
-    token = line.split(",")[0].strip().split()[0]
-    try:
+        token = out.strip().splitlines()[0].strip().split(",")[0].split()[0]
         int(token)
-    except ValueError:
-        return None
-    return token
+        temp = token
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
+        temp = None
+
+    return temp
 
 
-def gpu_block() -> dict:
-    """i3bar block for GPU temperature (cached)."""
-    global _gpu_text, _gpu_ts
-    now = time.time()
-    with _gpu_lock:
-        if now - _gpu_ts >= GPU_REFRESH_SEC:
-            temp = read_gpu_temp_c()
-            _gpu_text = f"Temp: {temp}°C" if temp is not None else "Temp: n/a"
-            _gpu_ts = now
-        text = _gpu_text
-    # Pango: red temp label + Pi-footer-colored | separator
-    body = (
-        f"<span foreground='{GPU_COLOR}'>{text}</span>"
+def pango_item(text: str, color: str) -> str:
+    return (
+        f"<span foreground='{color}'>{text}</span>"
         f"<span foreground='{SEP_COLOR}'> | </span>"
     )
+
+
+def stat_block(name: str, instance: str, text: str, color: str) -> dict:
     return {
-        "name": "gpu_temp",
-        "instance": "nvidia0",
-        "full_text": f"  {body}",
+        "name": name,
+        "instance": instance,
+        "full_text": pango_item(text, color),
         "markup": "pango",
         "separator": False,
         "separator_block_width": 0,
     }
 
 
+
+def read_generation_tokens(url: str) -> float | None:
+    try:
+        with urllib.request.urlopen(url, timeout=0.6) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    matches = GEN_RE.findall(body)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
+
+
+def update_tok() -> None:
+    """Live tok/s = counter delta. Avg = mean of last 30s of samples."""
+    global _tok_ts, _tok_last_count, _tok_last_t, _tok_live, _tok_avg, _tok_ok
+    now = time.time()
+    with _tok_lock:
+        if now - _tok_ts < TOK_REFRESH_SEC:
+            return
+        count = read_generation_tokens(TOK_URL)
+        _tok_ts = now
+        if count is None:
+            _tok_ok = False
+            _tok_live = None
+            return
+        _tok_ok = True
+        live = 0.0
+        if _tok_last_count is not None and _tok_last_t is not None:
+            dt = now - _tok_last_t
+            dc = count - _tok_last_count
+            if dt > 0.2 and dc >= 0:
+                live = dc / dt
+        _tok_last_count = count
+        _tok_last_t = now
+        _tok_live = live
+        _tok_samples.append((now, live))
+        cutoff = now - TOK_AVG_WINDOW_SEC
+        while _tok_samples and _tok_samples[0][0] < cutoff:
+            _tok_samples.popleft()
+        vals = [v for _, v in _tok_samples]
+        _tok_avg = (sum(vals) / len(vals)) if vals else 0.0
+
+
+def tok_text() -> str | None:
+    update_tok()
+    with _tok_lock:
+        if not _tok_ok or _tok_live is None:
+            return None
+        live = _tok_live
+    if live < 0.5:
+        return "Tok/sec: 0"
+    return f"Tok/sec: {live:.0f}"
+
+
+def extra_blocks() -> list[dict]:
+    """Mem + GPU temp."""
+    global _gpu_temp, _gpu_mem, _gpu_ts
+    now = time.time()
+    with _gpu_lock:
+        if now - _gpu_ts >= GPU_REFRESH_SEC:
+            temp = read_gpu_temp()
+            _gpu_temp = f"Temp: {temp}°C" if temp is not None else "Temp: n/a"
+            _gpu_ts = now
+        gpu_temp = _gpu_temp
+
+    ram_text = "Mem: n/a"
+    info = read_meminfo()
+    if info is not None:
+        avail_kb, total_kb = info
+        used_pct = max(0, min(100, int(round(100.0 * (1.0 - avail_kb / total_kb)))))
+        ram_text = f"Mem: {used_pct}%"
+
+    out = []
+    tok = tok_text()
+    if tok is not None:
+        out.append(stat_block("llm_tps", "vllm", tok, TOK_COLOR))
+    out.append(stat_block("cpu_mem", "host", ram_text, MEM_COLOR))
+    out.append(stat_block("gpu_temp", "nvidia0", gpu_temp, GPU_COLOR))
+    return out
+
+
 def inject_blocks(line: str) -> str:
-    """Insert GPU block before clock in an i3bar payload line."""
     raw = line.rstrip("\n")
     if not raw or raw in ("[", "]"):
         return line
@@ -138,21 +251,18 @@ def inject_blocks(line: str) -> str:
     if not isinstance(blocks, list):
         return line
 
-    gpu = gpu_block()
-    # remove prior injected block if any
-    blocks = [b for b in blocks if not (isinstance(b, dict) and b.get("name") == "gpu_temp")]
-
-    # place GPU immediately before tztime; else append
+    skip = {"gpu_temp", "gpu_mem", "cpu_mem", "llm_tps"}
+    blocks = [b for b in blocks if not (isinstance(b, dict) and b.get("name") in skip)]
     idx = next(
         (i for i, b in enumerate(blocks) if isinstance(b, dict) and b.get("name") == "tztime"),
         len(blocks),
     )
-    blocks.insert(idx, gpu)
+    for offset, blk in enumerate(extra_blocks()):
+        blocks.insert(idx + offset, blk)
     return prefix + json.dumps(blocks) + "\n"
 
 
 def handle_clicks() -> None:
-    # i3bar sends an infinite JSON array on stdin, one event per click.
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw or raw in ("[", "]"):
@@ -163,10 +273,7 @@ def handle_clicks() -> None:
             event = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        name = event.get("name")
-        button = event.get("button")
-        # left-click date/clock block
-        if name == "tztime" and button == 1:
+        if event.get("name") == "tztime" and event.get("button") == 1:
             open_calendar()
 
 
@@ -190,7 +297,6 @@ def main() -> int:
     sys.stdout.write(json.dumps(header) + "\n")
     sys.stdout.flush()
 
-    # skip the opening "[" line if present, then stream updates
     for line in proc.stdout:
         sys.stdout.write(inject_blocks(line))
         sys.stdout.flush()
