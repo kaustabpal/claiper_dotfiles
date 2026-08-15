@@ -4,6 +4,15 @@ i3 setup for caliper-01 (DGX Spark, Ubuntu 24.04, aarch64, NVIDIA GB10, X11).
 
 Restore this repo after a reinstall. It does **not** contain Firefox cookies, passwords, or SSH keys.
 
+
+## For an AI agent
+
+Point the agent at this repository and tell it:
+
+> Read AGENTS.md in https://github.com/kaustabpal/claiper_dotfiles and restore the claiper i3 desktop autonomously.
+
+The agent must follow `AGENTS.md` in order (clone → packages → install.sh → Firefox-safe gsettings → GDM i3 session → verify). It must not start xsettingsd or apply a global dark GTK theme.
+
 ## What is included
 
 - i3 + i3status + rofi + dunst + gsimplecal
