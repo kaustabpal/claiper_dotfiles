@@ -22,6 +22,7 @@ set $term ghostty
 # Display pin (i3-session only). Do not put this in ~/.profile or ~/.bashrc.
 # Keep this mode identical to GNOME baseline to avoid UI scale breakage.
 # ---------------------------------------------------------------------------
+exec --no-startup-id printf 'Xft.dpi: 96\n' | xrdb -merge
 exec --no-startup-id xrandr --output HDMI-0 --mode 2560x1440 --scale 1x1
 
 # Set solid black wallpaper
