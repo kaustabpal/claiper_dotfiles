@@ -31,6 +31,23 @@ GEN_RE = re.compile(
     r"(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
     re.M,
 )
+TPS_RE = re.compile(
+    r"^(?:sglang:gen_throughput|vllm:avg_generation_throughput_toks_per_s)"
+    r"(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
+    re.M,
+)
+RUNNING_RE = re.compile(
+    r"^sglang:num_running_reqs(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
+    re.M,
+)
+REALTIME_RE = re.compile(
+    r"^sglang:realtime_tokens_total\{[^}\n]*mode=\"decode\"[^}\n]*\}\s+([0-9.eE+-]+)\s*$",
+    re.M,
+)
+ITL_COUNT_RE = re.compile(
+    r"^sglang:inter_token_latency_seconds_count(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
+    re.M,
+)
 
 _gpu_lock = threading.Lock()
 _gpu_temp = "n/a"
@@ -142,14 +159,28 @@ def _http_get(url: str, timeout: float = 0.6) -> str | None:
         return None
 
 
-def _parse_prom_counter(body: str) -> float | None:
-    matches = GEN_RE.findall(body)
+def _parse_last_float(pattern: re.Pattern[str], body: str) -> float | None:
+    matches = pattern.findall(body)
     if not matches:
         return None
     try:
         return float(matches[-1])
     except ValueError:
         return None
+
+
+def _parse_prom_sum(pattern: re.Pattern[str], body: str) -> float | None:
+    matches = pattern.findall(body)
+    if not matches:
+        return None
+    try:
+        return sum(float(x) for x in matches)
+    except ValueError:
+        return None
+
+
+def _parse_prom_counter(body: str) -> float | None:
+    return _parse_prom_sum(GEN_RE, body)
 
 
 def _sglang_last_gen(data: object) -> float | None:
@@ -193,13 +224,24 @@ def _sglang_output_tokens(data: object) -> float | None:
         return None
 
 
-def read_tok_sample() -> tuple[str, float] | None:
-    """Return ("counter", tokens) or ("gauge", tok/s)."""
+def read_tok_sample() -> tuple[str, float, float | None] | None:
+    """Return (kind, value, running_reqs). kind is counter or gauge."""
     metrics = _http_get(f"{TOK_BASE}/metrics")
     if metrics:
+        running = _parse_last_float(RUNNING_RE, metrics)
+        realtime = _parse_prom_sum(REALTIME_RE, metrics)
+        itl = _parse_last_float(ITL_COUNT_RE, metrics)
+        gauge = _parse_last_float(TPS_RE, metrics)
         count = _parse_prom_counter(metrics)
+        # Decode counters move during a request. generation_tokens_total does not.
+        if realtime is not None:
+            return ("counter", realtime, running)
+        if itl is not None:
+            return ("counter", itl, running)
+        if gauge is not None and (gauge > 0.5 or (running is not None and running > 0)):
+            return ("gauge", gauge, running)
         if count is not None:
-            return ("counter", count)
+            return ("counter", count, running)
     info = _http_get(f"{TOK_BASE}/get_server_info")
     if not info:
         return None
@@ -209,15 +251,15 @@ def read_tok_sample() -> tuple[str, float] | None:
         return None
     out = _sglang_output_tokens(data)
     if out is not None:
-        return ("counter", out)
+        return ("counter", out, None)
     gauge = _sglang_last_gen(data)
     if gauge is None:
         return None
-    return ("gauge", gauge)
+    return ("gauge", gauge, None)
 
 
 def update_tok() -> None:
-    """vLLM/SGLang Prometheus counters, else SGLang last_gen_throughput."""
+    """SGLang live gen_throughput while running; else counter delta / sticky."""
     global _tok_ts, _tok_last_count, _tok_last_t, _tok_live, _tok_avg, _tok_ok
     global _tok_sticky_value, _tok_sticky_until
     now = time.time()
@@ -230,9 +272,10 @@ def update_tok() -> None:
             _tok_ok = False
             _tok_live = None
             return
-        kind, value = sample
+        kind, value, running = sample
         _tok_ok = True
         live = 0.0
+        in_flight = running is not None and running > 0
         if kind == "counter":
             if _tok_last_count is not None and _tok_last_t is not None:
                 dt = now - _tok_last_t
@@ -241,20 +284,23 @@ def update_tok() -> None:
                     live = dc / dt
             _tok_last_count = value
             _tok_last_t = now
+        elif in_flight:
+            if value > 0.5:
+                live = value
+                _tok_sticky_value = round(value, 2)
+                _tok_sticky_until = now + TOK_STICKY_SEC
+            else:
+                live = _tok_live or 0.0
         else:
             rounded = round(value, 2)
-            if _tok_sticky_value is None:
+            if rounded > 0.5:
+                if _tok_sticky_value != rounded:
+                    _tok_sticky_until = now + TOK_STICKY_SEC
                 _tok_sticky_value = rounded
-                _tok_sticky_until = now + TOK_STICKY_SEC if rounded > 0.5 else 0.0
-                live = rounded if rounded > 0.5 else 0.0
-            elif rounded != _tok_sticky_value:
-                _tok_sticky_value = rounded
-                _tok_sticky_until = now + TOK_STICKY_SEC
-                live = rounded
-            elif now < _tok_sticky_until:
-                live = rounded
+                live = rounded if now < _tok_sticky_until else 0.0
             else:
                 live = 0.0
+                _tok_sticky_value = 0.0
         _tok_live = live
         _tok_samples.append((now, live))
         cutoff = now - TOK_AVG_WINDOW_SEC
