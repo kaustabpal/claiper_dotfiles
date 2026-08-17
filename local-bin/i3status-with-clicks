@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""i3status wrapper: calendar click + GPU temp/mem + system RAM."""
+"""i3status wrapper: calendar click + GPU temp + system RAM + LLM tok/s."""
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -21,12 +21,14 @@ GPU_COLOR = "#e74c3c"  # red
 MEM_COLOR = "#e8e8e8"
 SEP_COLOR = "#5F676F"  # Pi footer separator
 GPU_REFRESH_SEC = 3.0
-TOK_REFRESH_SEC = 2.0
+TOK_REFRESH_SEC = 1.0
 TOK_AVG_WINDOW_SEC = 30.0
-TOK_URL = "http://127.0.0.1:8888/metrics"
+TOK_BASE = "http://127.0.0.1:8888"
 TOK_COLOR = "#e8e8e8"
+TOK_STICKY_SEC = 6.0
 GEN_RE = re.compile(
-    r"^vllm:generation_tokens_total(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
+    r"^(?:vllm:generation_tokens_total|sglang:generation_tokens_total|sglang_generation_tokens_total)"
+    r"(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$",
     re.M,
 )
 
@@ -42,7 +44,9 @@ _tok_last_t = None
 _tok_live = None
 _tok_avg = None
 _tok_ok = False
-_tok_samples = deque()
+_tok_samples: deque[tuple[float, float]] = deque()
+_tok_sticky_value = None
+_tok_sticky_until = 0.0
 
 
 def open_calendar() -> None:
@@ -73,25 +77,6 @@ def open_calendar() -> None:
             continue
 
 
-def _parse_mib(token: str) -> float | None:
-    token = token.strip().replace(",", "")
-    if not token or token.upper() in {"N/A", "[N/A]", "NOT SUPPORTED"}:
-        return None
-    # "103197 MiB" or "103197"
-    num = token.split()[0]
-    try:
-        return float(num)
-    except ValueError:
-        return None
-
-
-def _fmt_gib(mib: float) -> str:
-    gib = mib / 1024.0
-    if gib >= 10:
-        return f"{gib:.0f}G"
-    return f"{gib:.1f}G"
-
-
 def read_meminfo() -> tuple[int, int] | None:
     """Return (available_kb, total_kb) from /proc/meminfo."""
     total = avail = None
@@ -111,7 +96,6 @@ def read_meminfo() -> tuple[int, int] | None:
 
 def read_gpu_temp() -> str | None:
     """Return GPU temp in C."""
-    temp = None
     try:
         out = subprocess.check_output(
             [
@@ -125,11 +109,9 @@ def read_gpu_temp() -> str | None:
         )
         token = out.strip().splitlines()[0].strip().split(",")[0].split()[0]
         int(token)
-        temp = token
+        return token
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
-        temp = None
-
-    return temp
+        return None
 
 
 def pango_item(text: str, color: str) -> str:
@@ -150,13 +132,17 @@ def stat_block(name: str, instance: str, text: str, color: str) -> dict:
     }
 
 
-
-def read_generation_tokens(url: str) -> float | None:
+def _http_get(url: str, timeout: float = 0.6) -> str | None:
     try:
-        with urllib.request.urlopen(url, timeout=0.6) as resp:
-            body = resp.read().decode("utf-8", "replace")
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            if getattr(resp, "status", 200) >= 400:
+                return None
+            return resp.read().decode("utf-8", "replace")
     except (urllib.error.URLError, TimeoutError, OSError):
         return None
+
+
+def _parse_prom_counter(body: str) -> float | None:
     matches = GEN_RE.findall(body)
     if not matches:
         return None
@@ -166,28 +152,109 @@ def read_generation_tokens(url: str) -> float | None:
         return None
 
 
+def _sglang_last_gen(data: object) -> float | None:
+    if not isinstance(data, dict):
+        return None
+    top = data.get("last_gen_throughput")
+    try:
+        if top is not None:
+            n = float(top)
+            if n >= 0:
+                return n
+    except (TypeError, ValueError):
+        pass
+    states = data.get("internal_states")
+    if not isinstance(states, list):
+        return None
+    best = None
+    for st in states:
+        if not isinstance(st, dict):
+            continue
+        try:
+            n = float(st.get("last_gen_throughput"))
+        except (TypeError, ValueError):
+            continue
+        if n < 0:
+            continue
+        if best is None or n > best:
+            best = n
+    return best
+
+
+def _sglang_output_tokens(data: object) -> float | None:
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("total_output_tokens")
+    try:
+        if raw is None:
+            return None
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_tok_sample() -> tuple[str, float] | None:
+    """Return ("counter", tokens) or ("gauge", tok/s)."""
+    metrics = _http_get(f"{TOK_BASE}/metrics")
+    if metrics:
+        count = _parse_prom_counter(metrics)
+        if count is not None:
+            return ("counter", count)
+    info = _http_get(f"{TOK_BASE}/get_server_info")
+    if not info:
+        return None
+    try:
+        data = json.loads(info)
+    except json.JSONDecodeError:
+        return None
+    out = _sglang_output_tokens(data)
+    if out is not None:
+        return ("counter", out)
+    gauge = _sglang_last_gen(data)
+    if gauge is None:
+        return None
+    return ("gauge", gauge)
+
+
 def update_tok() -> None:
-    """Live tok/s = counter delta. Avg = mean of last 30s of samples."""
+    """vLLM/SGLang Prometheus counters, else SGLang last_gen_throughput."""
     global _tok_ts, _tok_last_count, _tok_last_t, _tok_live, _tok_avg, _tok_ok
+    global _tok_sticky_value, _tok_sticky_until
     now = time.time()
     with _tok_lock:
         if now - _tok_ts < TOK_REFRESH_SEC:
             return
-        count = read_generation_tokens(TOK_URL)
+        sample = read_tok_sample()
         _tok_ts = now
-        if count is None:
+        if sample is None:
             _tok_ok = False
             _tok_live = None
             return
+        kind, value = sample
         _tok_ok = True
         live = 0.0
-        if _tok_last_count is not None and _tok_last_t is not None:
-            dt = now - _tok_last_t
-            dc = count - _tok_last_count
-            if dt > 0.2 and dc >= 0:
-                live = dc / dt
-        _tok_last_count = count
-        _tok_last_t = now
+        if kind == "counter":
+            if _tok_last_count is not None and _tok_last_t is not None:
+                dt = now - _tok_last_t
+                dc = value - _tok_last_count
+                if dt > 0.2 and dc >= 0:
+                    live = dc / dt
+            _tok_last_count = value
+            _tok_last_t = now
+        else:
+            rounded = round(value, 2)
+            if _tok_sticky_value is None:
+                _tok_sticky_value = rounded
+                _tok_sticky_until = now + TOK_STICKY_SEC if rounded > 0.5 else 0.0
+                live = rounded if rounded > 0.5 else 0.0
+            elif rounded != _tok_sticky_value:
+                _tok_sticky_value = rounded
+                _tok_sticky_until = now + TOK_STICKY_SEC
+                live = rounded
+            elif now < _tok_sticky_until:
+                live = rounded
+            else:
+                live = 0.0
         _tok_live = live
         _tok_samples.append((now, live))
         cutoff = now - TOK_AVG_WINDOW_SEC
@@ -209,8 +276,8 @@ def tok_text() -> str | None:
 
 
 def extra_blocks() -> list[dict]:
-    """Mem + GPU temp."""
-    global _gpu_temp, _gpu_mem, _gpu_ts
+    """Mem + GPU temp + tok/s."""
+    global _gpu_temp, _gpu_ts
     now = time.time()
     with _gpu_lock:
         if now - _gpu_ts >= GPU_REFRESH_SEC:
